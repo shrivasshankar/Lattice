@@ -13,8 +13,8 @@
 namespace lattice {
 
 struct HNSWConfig {
-    uint32_t M = 16;                // max connections per node per layer
-    uint32_t ef_construction = 200; // candidate list size during insert
+    uint32_t M = 32;                // max connections per node per layer
+    uint32_t ef_construction = 400; // candidate list size during insert
     uint32_t seed = 42;
     DistanceFn distance_fn = l2_distance;
 };

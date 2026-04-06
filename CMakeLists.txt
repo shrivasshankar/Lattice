@@ -25,6 +25,10 @@ target_link_libraries(lattice_lib PUBLIC Threads::Threads)
 add_executable(lattice src/main.cpp)
 target_link_libraries(lattice PRIVATE lattice_lib)
 
+# ── Tuning tool ──────────────────────────────────────────────────────────────
+add_executable(tune_recall tools/tune_recall.cpp)
+target_link_libraries(tune_recall PRIVATE lattice_lib)
+
 # ── Tests (GoogleTest via FetchContent) ─────────────────────────────────────
 include(FetchContent)
 FetchContent_Declare(
