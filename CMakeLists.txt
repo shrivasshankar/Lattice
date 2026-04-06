@@ -13,8 +13,13 @@ add_library(lattice_lib
     src/hnsw.cpp
     src/allocator.cpp
     src/simd_distance.cpp
+    src/thread_pool.cpp
 )
 target_include_directories(lattice_lib PUBLIC src)
+
+# Thread support (required for std::thread, std::mutex, etc.)
+find_package(Threads REQUIRED)
+target_link_libraries(lattice_lib PUBLIC Threads::Threads)
 
 # ── Main executable ─────────────────────────────────────────────────────────
 add_executable(lattice src/main.cpp)
@@ -39,6 +44,7 @@ add_executable(lattice_tests
     tests/test_hnsw_search.cpp
     tests/test_allocator.cpp
     tests/test_simd_distance.cpp
+    tests/test_thread_pool.cpp
 )
 target_link_libraries(lattice_tests PRIVATE lattice_lib GTest::gtest_main)
 
