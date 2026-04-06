@@ -8,11 +8,13 @@ Benchmarked on Apple Silicon (M-series), 50,000 vectors, 128 dimensions:
 
 | Metric | Result |
 |---|---|
-| Index build time | 24.3s |
-| Query throughput (1 thread) | 5,461 queries/sec |
-| Query throughput (14 threads) | 27,982 queries/sec |
-| Recall@10 (ef=100) | 79.3% |
-| Query latency (ef=100) | 0.037 ms per query |
+| Index build time | 23.0s |
+| Index save | 7.7 ms |
+| Index load | 0.1 ms (626x faster than build) |
+| Query throughput (1 thread) | 5,617 queries/sec |
+| Query throughput (14 threads) | 26,716 queries/sec |
+| Recall@10 (ef=100) | 79.2% |
+| Query latency (ef=100) | 0.183 ms per query |
 
 ### Distance computation (1M operations, dim=128)
 
@@ -60,6 +62,8 @@ Benchmarked on Apple Silicon (M-series), 50,000 vectors, 128 dimensions:
 | `src/hnsw.h/cpp` | HNSW index: insert, build, search |
 | `src/allocator.h/cpp` | Arena bump allocator + fixed-size pool allocator |
 | `src/thread_pool.h/cpp` | Thread pool with task queue and futures |
+| `Dockerfile` | Multi-stage build: compile, test, minimal runtime image |
+| `.github/workflows/ci.yml` | CI on Ubuntu (SSE) + macOS (NEON) + Docker |
 
 ## Key Design Decisions
 
@@ -68,6 +72,7 @@ Benchmarked on Apple Silicon (M-series), 50,000 vectors, 128 dimensions:
 - **Arena allocator for graph nodes** — HNSW allocates everything during build and frees everything at destruction. Arena semantics match perfectly.
 - **`DistanceFn` as function pointer** — swap between scalar/SIMD/cosine at construction time with zero runtime overhead.
 - **`ef_search` parameter** — single knob to trade recall for latency at query time.
+- **Binary serialization** — save/load index graph in a compact binary format with magic number validation and version checking. Load is 626x faster than rebuild.
 
 ## Build
 
@@ -82,7 +87,7 @@ cmake --build build -j$(nproc)
 cd build && ctest --output-on-failure
 ```
 
-91 tests covering correctness, edge cases, and performance benchmarks.
+99 tests covering correctness, edge cases, serialization, and performance benchmarks.
 
 ## Run
 

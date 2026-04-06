@@ -6,6 +6,7 @@
 
 #include <cstdint>
 #include <random>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
@@ -36,6 +37,15 @@ public:
         uint32_t k,
         uint32_t ef_search = 50
     );
+
+    // Save the index graph structure to a binary file.
+    // Only saves the graph (node levels, neighbor lists) — not the vectors.
+    // The same dataset must be provided when loading.
+    void save(const std::string& filename) const;
+
+    // Load a previously saved index. Restores all graph structure.
+    // The dataset passed to the constructor must match the one used at build time.
+    void load(const std::string& filename);
 
     // Getters for testing and inspection
     uint32_t get_max_layer() const { return max_layer_; }

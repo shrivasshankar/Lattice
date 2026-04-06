@@ -2,7 +2,9 @@
 
 #include <algorithm>
 #include <cmath>
+#include <fstream>
 #include <queue>
+#include <stdexcept>
 
 namespace lattice {
 
@@ -277,6 +279,132 @@ std::vector<uint32_t> HNSWIndex::select_neighbors(
     }
 
     return selected;
+}
+
+// ── Serialization ─────────────────────────────────────────────────────────
+//
+// Binary format (all values little-endian uint32_t unless noted):
+//
+//   [Header]
+//     magic:           0x4C415454 ("LATT")
+//     version:         1
+//     num_vectors:     total nodes in the index
+//     M:               max connections per layer
+//     entry_point:     ID of the entry point node
+//     max_layer:       highest layer in the graph
+//     num_inserted:    number of inserted nodes
+//
+//   [Node table — one entry per node]
+//     level:           highest layer this node appears in
+//     For each layer 0..level:
+//       num_neighbors:   neighbor count at this layer
+//       neighbor_ids[]:  uint32_t array of neighbor IDs
+//
+// The vectors themselves are NOT saved — the caller must provide the same
+// dataset when constructing the index before calling load().
+
+static constexpr uint32_t LATTICE_MAGIC   = 0x4C415454; // "LATT"
+static constexpr uint32_t LATTICE_VERSION = 1;
+
+void HNSWIndex::save(const std::string& filename) const {
+    std::ofstream file(filename, std::ios::binary);
+    if (!file) throw std::runtime_error("Cannot open file for writing: " + filename);
+
+    auto write_u32 = [&](uint32_t val) {
+        file.write(reinterpret_cast<const char*>(&val), sizeof(val));
+    };
+
+    // Header
+    write_u32(LATTICE_MAGIC);
+    write_u32(LATTICE_VERSION);
+    write_u32(dataset_.num_vectors);
+    write_u32(config_.M);
+    write_u32(entry_point_);
+    write_u32(max_layer_);
+    write_u32(num_inserted_);
+
+    // Node table
+    for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
+        const Node& node = nodes_[i];
+        write_u32(node.level);
+        write_u32(node.inserted ? 1 : 0);
+
+        if (!node.inserted) continue;
+
+        for (uint32_t layer = 0; layer <= node.level; ++layer) {
+            const auto& nbrs = node.neighbors[layer];
+            write_u32(static_cast<uint32_t>(nbrs.size()));
+            if (!nbrs.empty()) {
+                file.write(reinterpret_cast<const char*>(nbrs.data()),
+                           nbrs.size() * sizeof(uint32_t));
+            }
+        }
+    }
+
+    if (!file) throw std::runtime_error("Error writing index file: " + filename);
+}
+
+void HNSWIndex::load(const std::string& filename) {
+    std::ifstream file(filename, std::ios::binary);
+    if (!file) throw std::runtime_error("Cannot open file for reading: " + filename);
+
+    auto read_u32 = [&]() -> uint32_t {
+        uint32_t val;
+        file.read(reinterpret_cast<char*>(&val), sizeof(val));
+        return val;
+    };
+
+    // Header
+    uint32_t magic = read_u32();
+    if (magic != LATTICE_MAGIC) {
+        throw std::runtime_error("Invalid index file (bad magic number)");
+    }
+
+    uint32_t version = read_u32();
+    if (version != LATTICE_VERSION) {
+        throw std::runtime_error("Unsupported index version: " + std::to_string(version));
+    }
+
+    uint32_t num_vectors = read_u32();
+    if (num_vectors != dataset_.num_vectors) {
+        throw std::runtime_error("Index was built for " + std::to_string(num_vectors) +
+                                 " vectors but dataset has " + std::to_string(dataset_.num_vectors));
+    }
+
+    uint32_t saved_M = read_u32();
+    if (saved_M != config_.M) {
+        throw std::runtime_error("Index M=" + std::to_string(saved_M) +
+                                 " but config M=" + std::to_string(config_.M));
+    }
+
+    entry_point_  = read_u32();
+    max_layer_    = read_u32();
+    num_inserted_ = read_u32();
+
+    // Node table
+    nodes_.resize(num_vectors);
+    for (uint32_t i = 0; i < num_vectors; ++i) {
+        Node& node = nodes_[i];
+        node.level = read_u32();
+        node.inserted = (read_u32() == 1);
+
+        if (!node.inserted) {
+            node.neighbors.clear();
+            continue;
+        }
+
+        node.neighbors.resize(node.level + 1);
+        for (uint32_t layer = 0; layer <= node.level; ++layer) {
+            uint32_t num_nbrs = read_u32();
+            node.neighbors[layer].resize(num_nbrs);
+            if (num_nbrs > 0) {
+                file.read(reinterpret_cast<char*>(node.neighbors[layer].data()),
+                          num_nbrs * sizeof(uint32_t));
+            }
+        }
+    }
+
+    if (!file) throw std::runtime_error("Error reading index file: " + filename);
 }
 
 // ── Getters ────────────────────────────────────────────────────────────────
