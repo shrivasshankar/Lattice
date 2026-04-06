@@ -34,6 +34,7 @@ add_executable(lattice_tests
     tests/test_distance.cpp
     tests/test_search.cpp
     tests/test_hnsw.cpp
+    tests/test_hnsw_search.cpp
 )
 target_link_libraries(lattice_tests PRIVATE lattice_lib GTest::gtest_main)
 

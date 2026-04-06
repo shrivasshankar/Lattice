@@ -28,6 +28,15 @@ public:
     // Insert all vectors in the dataset.
     void build();
 
+    // Search the index for the k nearest neighbors of a query vector.
+    // ef_search controls quality vs speed (higher = better recall, slower).
+    // Must be >= k.
+    std::vector<SearchResult> search(
+        const float* query,
+        uint32_t k,
+        uint32_t ef_search = 50
+    );
+
     // Getters for testing and inspection
     uint32_t get_max_layer() const { return max_layer_; }
     uint32_t get_entry_point() const { return entry_point_; }

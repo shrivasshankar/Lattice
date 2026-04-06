@@ -116,6 +116,47 @@ void HNSWIndex::insert(uint32_t vector_id) {
     num_inserted_++;
 }
 
+// ── Search ─────────────────────────────────────────────────────────────────
+//
+// The HNSW search algorithm mirrors insert's traversal:
+//   1. Start at the entry point, top layer
+//   2. Greedily descend through layers above 0 (ef=1 at each layer)
+//   3. At layer 0, run search_layer with ef=ef_search
+//   4. Return the top k results from that search
+//
+// The ef_search parameter is the key quality knob at query time:
+//   - ef_search = k:   fast but low recall
+//   - ef_search = 200: slow but high recall
+//   - ef_search = 500: very slow, near-perfect recall
+
+std::vector<SearchResult> HNSWIndex::search(
+    const float* query,
+    uint32_t k,
+    uint32_t ef_search
+) {
+    if (num_inserted_ == 0) return {};
+    if (ef_search < k) ef_search = k;
+
+    uint32_t ep = entry_point_;
+
+    // Phase 1: greedily descend from top layer to layer 1
+    for (int layer = static_cast<int>(max_layer_); layer >= 1; --layer) {
+        auto results = search_layer(query, {ep}, 1, layer);
+        if (!results.empty()) {
+            ep = results[0].index;
+        }
+    }
+
+    // Phase 2: thorough search at layer 0 with ef_search candidates
+    auto candidates = search_layer(query, {ep}, ef_search, 0);
+
+    // Return only the top k results
+    if (candidates.size() > k) {
+        candidates.resize(k);
+    }
+    return candidates;
+}
+
 void HNSWIndex::build() {
     for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
         insert(i);

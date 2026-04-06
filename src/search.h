@@ -23,4 +23,13 @@ std::vector<SearchResult> brute_force_knn(
     DistanceFn distance_fn = l2_distance
 );
 
+// Compute recall@k: what fraction of the true k nearest neighbors
+// did the approximate search actually find?
+// Returns a value in [0.0, 1.0] where 1.0 = perfect recall.
+float compute_recall(
+    const std::vector<SearchResult>& approximate,
+    const std::vector<SearchResult>& ground_truth,
+    uint32_t k
+);
+
 } // namespace lattice

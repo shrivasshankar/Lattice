@@ -3,6 +3,7 @@
 #include <queue>
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_set>
 
 namespace lattice {
 
@@ -48,6 +49,30 @@ std::vector<SearchResult> brute_force_knn(
               });
 
     return results;
+}
+
+float compute_recall(
+    const std::vector<SearchResult>& approximate,
+    const std::vector<SearchResult>& ground_truth,
+    uint32_t k
+) {
+    if (k == 0) return 1.0f;
+
+    // Collect the true top-k IDs
+    std::unordered_set<uint32_t> true_set;
+    for (uint32_t i = 0; i < std::min(k, static_cast<uint32_t>(ground_truth.size())); ++i) {
+        true_set.insert(ground_truth[i].index);
+    }
+
+    // Count how many of the approximate results are in the true set
+    uint32_t hits = 0;
+    for (uint32_t i = 0; i < std::min(k, static_cast<uint32_t>(approximate.size())); ++i) {
+        if (true_set.count(approximate[i].index)) {
+            hits++;
+        }
+    }
+
+    return static_cast<float>(hits) / static_cast<float>(true_set.size());
 }
 
 } // namespace lattice
