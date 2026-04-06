@@ -1,6 +1,7 @@
 #include "vector.h"
 #include "distance.h"
 #include "search.h"
+#include "hnsw.h"
 
 #include <chrono>
 #include <iostream>
@@ -22,47 +23,46 @@ void benchmark_brute_force(uint32_t num_vectors, uint32_t dimension, uint32_t k)
 }
 
 int main() {
-    std::cout << "=== Lattice Vector Search Engine — Week 2 ===\n\n";
+    std::cout << "=== Lattice Vector Search Engine — Week 3 ===\n\n";
 
-    // ── Demo: brute-force search on a small dataset ────────────────────────
-    std::cout << "--- Demo: small dataset search ---\n";
-    auto dataset = lattice::generate_random_vectors(100, 8, 42);
-    std::vector<float> query = {0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f, 0.5f};
-
-    std::cout << "Query: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]\n";
-    std::cout << "Top 5 nearest neighbors (L2):\n";
-
-    auto results = lattice::brute_force_knn(dataset, query.data(), 5);
-    for (const auto& r : results) {
-        const float* v = dataset.get_vector(r.index);
-        std::cout << "  vec[" << std::setw(3) << r.index << "]  dist=" 
-                  << std::fixed << std::setprecision(4) << r.distance << "  | ";
-        for (uint32_t d = 0; d < 8; ++d) {
-            if (d > 0) std::cout << ", ";
-            std::cout << std::setprecision(3) << v[d];
-        }
-        std::cout << "\n";
-    }
-
-    // ── Demo: cosine distance ──────────────────────────────────────────────
-    std::cout << "\nTop 5 nearest neighbors (Cosine):\n";
-    auto cosine_results = lattice::brute_force_knn(dataset, query.data(), 5,
-                                                    lattice::cosine_distance);
-    for (const auto& r : cosine_results) {
-        std::cout << "  vec[" << std::setw(3) << r.index << "]  dist="
-                  << std::fixed << std::setprecision(6) << r.distance << "\n";
-    }
-
-    // ── Benchmark: brute-force at increasing scale ─────────────────────────
+    // ── HNSW index build ───────────────────────────────────────────────────
+    const uint32_t num_vectors = 10000;
     const uint32_t dim = 128;
-    const uint32_t k = 10;
 
-    std::cout << "\n--- Benchmark: brute-force KNN (dim=" << dim << ", k=" << k << ") ---\n";
-    benchmark_brute_force(1000, dim, k);
-    benchmark_brute_force(10000, dim, k);
-    benchmark_brute_force(100000, dim, k);
-    benchmark_brute_force(500000, dim, k);
+    std::cout << "--- HNSW Index Build ---\n";
+    std::cout << "Building index: " << num_vectors << " vectors, "
+              << dim << " dimensions, M=16, ef_construction=200\n";
 
-    std::cout << "\nDone.\n";
+    auto dataset = lattice::generate_random_vectors(num_vectors, dim, 42);
+
+    auto start = std::chrono::high_resolution_clock::now();
+    lattice::HNSWIndex index(dataset, {.M = 16, .ef_construction = 200, .seed = 42});
+    index.build();
+    auto end = std::chrono::high_resolution_clock::now();
+
+    double build_ms = std::chrono::duration<double, std::milli>(end - start).count();
+
+    std::cout << "Build time:   " << std::fixed << std::setprecision(1) << build_ms << " ms\n";
+    std::cout << "Nodes:        " << index.num_nodes() << "\n";
+    std::cout << "Max layer:    " << index.get_max_layer() << "\n";
+    std::cout << "Entry point:  " << index.get_entry_point() << "\n";
+
+    // Layer distribution
+    std::cout << "\nLayer distribution:\n";
+    std::vector<uint32_t> layer_counts(index.get_max_layer() + 1, 0);
+    for (uint32_t i = 0; i < num_vectors; ++i) {
+        layer_counts[index.get_node_level(i)]++;
+    }
+    for (uint32_t l = 0; l <= index.get_max_layer(); ++l) {
+        std::cout << "  Layer " << l << ": " << layer_counts[l] << " nodes\n";
+    }
+
+    // ── Brute-force benchmarks (baseline for comparison) ───────────────────
+    std::cout << "\n--- Brute-force KNN baseline (dim=128, k=10) ---\n";
+    benchmark_brute_force(1000, dim, 10);
+    benchmark_brute_force(10000, dim, 10);
+    benchmark_brute_force(100000, dim, 10);
+
+    std::cout << "\nDone. HNSW search coming in Week 5.\n";
     return 0;
 }

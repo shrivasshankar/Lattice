@@ -10,6 +10,7 @@ add_library(lattice_lib
     src/vector.cpp
     src/distance.cpp
     src/search.cpp
+    src/hnsw.cpp
 )
 target_include_directories(lattice_lib PUBLIC src)
 
@@ -32,6 +33,7 @@ add_executable(lattice_tests
     tests/test_vector.cpp
     tests/test_distance.cpp
     tests/test_search.cpp
+    tests/test_hnsw.cpp
 )
 target_link_libraries(lattice_tests PRIVATE lattice_lib GTest::gtest_main)
 
