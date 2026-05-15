@@ -2,6 +2,15 @@
 
 A high-performance approximate nearest neighbor (ANN) vector search engine built from scratch in C++17. No external libraries for core algorithms — every component is hand-written: HNSW graph construction, SIMD-accelerated distance computation, custom memory allocator, and multi-threaded query processing.
 
+## About this project
+
+Started in February 2026 with reading (HNSW paper, FAISS source) and
+prototyping in scratch files / [MadStorageV1, if relevant]. The dense
+commit cadence in early April is the shipping push of work that had
+been ongoing for ~2 months. Decisions like the bump allocator, the
+NEON-vs-SSE split, and the parameter sweep around M=32, efC=400 came
+out of that earlier exploration.
+
 ## Performance
 
 Benchmarked on Apple Silicon (M-series), 128 dimensions, k=10:
