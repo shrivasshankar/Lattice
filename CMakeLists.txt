@@ -29,6 +29,10 @@ target_link_libraries(lattice PRIVATE lattice_lib)
 add_executable(tune_recall tools/tune_recall.cpp)
 target_link_libraries(tune_recall PRIVATE lattice_lib)
 
+# ── Dataset exporter (for the FAISS comparison) ──────────────────────────────
+add_executable(export_dataset tools/export_dataset.cpp)
+target_link_libraries(export_dataset PRIVATE lattice_lib)
+
 # ── Tests (GoogleTest via FetchContent) ─────────────────────────────────────
 include(FetchContent)
 FetchContent_Declare(

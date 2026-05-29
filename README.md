@@ -34,20 +34,45 @@ Benchmarked on Apple Silicon (M-series), 128 dimensions, k=10:
 
 ### Comparison with Facebook FAISS
 
-Same dataset, same parameters (M=32, efC=400), same queries:
+Both engines run on the **exact same vectors and queries** — Lattice's dataset is
+dumped to disk by the `export_dataset` tool and loaded by `tools/faiss_comparison.py`,
+so this is a true apples-to-apples comparison (not two independently generated datasets).
+Same parameters throughout (M=32, efC=400, k=10, 200 queries).
 
-| Metric (50K, ef=200) | Lattice | FAISS |
-|---|---|---|
-| Recall@10 | **95.5%** | 97.0% |
-| Query latency | 0.747 ms | 0.031 ms |
-| Build time | 64s | 5.5s |
+**50K vectors** — build: Lattice 65.7s, FAISS 5.7s
 
-| Metric (100K, ef=500) | Lattice | FAISS |
-|---|---|---|
-| Recall@10 | **97.0%** | 93.9% |
-| Query latency | 2.071 ms | 0.125 ms |
+| ef_search | Lattice recall@10 | FAISS recall@10 | Lattice latency | FAISS latency |
+|---|---|---|---|---|
+| 50 | **85.8%** | 75.9% | 0.189 ms | 0.014 ms |
+| 100 | **91.8%** | 90.7% | 0.395 ms | 0.018 ms |
+| 200 | **95.5%** | 95.0% | 0.786 ms | 0.027 ms |
+| 500 | 98.5% | **100.0%** | 1.898 ms | 0.077 ms |
+| 1000 | 100.0% | 100.0% | 3.498 ms | 0.169 ms |
 
-Lattice achieves competitive recall with FAISS — and higher recall at 100K vectors at the same ef setting. FAISS is faster due to AVX2 SIMD (8 floats/instruction vs NEON's 4), multi-threaded index build, and years of production optimization by Facebook's research team.
+**100K vectors** — build: Lattice 209.6s, FAISS 15.7s
+
+| ef_search | Lattice recall@10 | FAISS recall@10 | Lattice latency | FAISS latency |
+|---|---|---|---|---|
+| 50 | **71.6%** | 58.5% | 0.185 ms | 0.010 ms |
+| 100 | **82.2%** | 73.4% | 0.377 ms | 0.020 ms |
+| 200 | **92.6%** | 91.9% | 0.789 ms | 0.033 ms |
+| 500 | 97.0% | **99.8%** | 2.460 ms | 0.096 ms |
+| 1000 | 97.8% | **100.0%** | 3.506 ms | 0.206 ms |
+
+Honest reading of the numbers:
+
+- **Low-to-mid ef:** Lattice reaches *higher* recall than FAISS at the same ef (e.g. 50K ef=200: 95.5% vs 95.0%; 100K ef=50: 71.6% vs 58.5%). Lattice's candidate list converges quickly on this data.
+- **High ef:** FAISS pulls ahead to ~100% while Lattice plateaus (98.5% at 50K, 97.0% at 100K). FAISS uses the HNSW *diversity* neighbor-selection heuristic; Lattice uses simple closest-M selection, which caps peak recall (see Key Design Decisions).
+- **Speed:** FAISS is ~10-25x lower query latency and ~12x faster to build — AVX2 SIMD (8 floats/instruction vs NEON's 4), multi-threaded index construction, and years of production optimization.
+
+Reproduce:
+
+```bash
+cmake --build build --target export_dataset
+./build/export_dataset 50000 200
+./build/export_dataset 100000 200
+python3 tools/faiss_comparison.py 50000 100000
+```
 
 ### Component-Level Speedups
 
@@ -55,7 +80,7 @@ Lattice achieves competitive recall with FAISS — and higher recall at 100K vec
 |---|---|
 | SIMD L2 distance (NEON) | **7.4x** vs scalar |
 | SIMD cosine distance | **4.7x** vs scalar |
-| Arena allocator | **5.1x** vs malloc |
+| Arena allocator (standalone microbenchmark) | **5.1x** vs malloc |
 | Multi-threaded search (14 cores) | **4.9x** vs single-thread |
 | Index load vs rebuild | **626x** faster |
 
@@ -80,6 +105,10 @@ Lattice achieves competitive recall with FAISS — and higher recall at 100K vec
 └─────────────────────────────────────────────────────┘
 ```
 
+> Note: the Memory Arena is a standalone, tested component. The HNSW index does
+> not currently allocate its graph through the arena — it uses `std::vector`.
+> Wiring the arena into the graph is a planned optimization, not yet implemented.
+
 ## Components
 
 | File | What it does |
@@ -98,7 +127,7 @@ Lattice achieves competitive recall with FAISS — and higher recall at 100K vec
 
 - **Squared L2 distance** — skips `sqrt()` since it doesn't change nearest-neighbor ordering.
 - **SIMD with 4 accumulators** — maximizes instruction-level parallelism by avoiding pipeline stalls from data dependencies.
-- **Arena allocator for graph nodes** — HNSW allocates everything during build and frees everything at destruction. Arena semantics match perfectly.
+- **Arena/pool allocators (standalone)** — `src/allocator.h` implements a bump-pointer arena and a fixed-size pool allocator, benchmarked at 5.1x vs `malloc` for many small allocations. They are *not yet wired into the HNSW graph* (which currently stores nodes/neighbor lists in `std::vector`); HNSW's all-allocate-then-free-at-destruction lifetime is an ideal future fit for the arena.
 - **`DistanceFn` as function pointer** — swap between scalar/SIMD/cosine at construction time with zero runtime overhead.
 - **`ef_search` parameter** — single knob to trade recall for latency at query time.
 - **Binary serialization** — save/load index graph in a compact binary format with magic number validation and version checking. Load is 626x faster than rebuild.
