@@ -24,7 +24,13 @@ public:
     explicit HNSWIndex(const VectorDataset& dataset, HNSWConfig config = {});
 
     // Insert a single vector into the index by its ID in the dataset.
+    // Draws the node's level from the index's RNG.
     void insert(uint32_t vector_id);
+
+    // Insert with a pre-assigned level. Levels are drawn up front in
+    // build() so that insertion itself never touches shared RNG state —
+    // a prerequisite for running inserts on multiple threads.
+    void insert(uint32_t vector_id, uint32_t node_level);
 
     // Insert all vectors in the dataset.
     void build();

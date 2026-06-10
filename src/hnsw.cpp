@@ -45,8 +45,10 @@ uint32_t HNSWIndex::random_level() {
 //   4. If the new node's level is the highest yet, it becomes the entry point
 
 void HNSWIndex::insert(uint32_t vector_id) {
-    uint32_t node_level = random_level();
+    insert(vector_id, random_level());
+}
 
+void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
     Node& node = nodes_[vector_id];
     node.level = node_level;
     node.inserted = true;
@@ -162,8 +164,17 @@ std::vector<SearchResult> HNSWIndex::search(
 }
 
 void HNSWIndex::build() {
+    // Draw every node's level before inserting anything. Level assignment
+    // is the only randomness in construction, so pulling it out of the
+    // insert loop keeps levels deterministic (seed-reproducible) even once
+    // inserts run concurrently and complete in nondeterministic order.
+    std::vector<uint32_t> levels(dataset_.num_vectors);
     for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
-        insert(i);
+        levels[i] = random_level();
+    }
+
+    for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
+        insert(i, levels[i]);
     }
 }
 
