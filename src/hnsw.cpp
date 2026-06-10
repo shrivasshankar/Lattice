@@ -28,7 +28,9 @@ HNSWIndex::HNSWIndex(const VectorDataset& dataset, HNSWConfig config)
 
 uint32_t HNSWIndex::random_level() {
     std::uniform_real_distribution<float> dist(0.0f, 1.0f);
-    float r = dist(rng_);
+    // dist returns [0, 1); map to (0, 1] because -log(0) is +inf, and
+    // casting an infinite float to uint32_t is undefined behavior.
+    float r = 1.0f - dist(rng_);
     return static_cast<uint32_t>(-std::log(r) * mL_);
 }
 
