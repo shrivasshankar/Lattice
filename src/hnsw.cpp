@@ -99,11 +99,24 @@ void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
         uint32_t max_conn = (layer == 0) ? M0_ : config_.M;
         auto neighbors = select_neighbors(candidates, max_conn);
 
-        // Forward connections: new node → neighbors
-        node.neighbors[layer] = neighbors;
+        // Forward connections: new node → neighbors. Locked because the
+        // node becomes visible to searchers as soon as the first reverse
+        // edge below publishes it; writes to its other layers would then
+        // race with readers. Writing forward edges before reverse edges
+        // also guarantees a reader that discovers this node sees its
+        // outgoing list for this layer fully populated.
+        {
+            std::lock_guard<std::mutex> lock(lock_for(vector_id));
+            node.neighbors[layer] = neighbors;
+        }
 
-        // Reverse connections: each neighbor → new node
+        // Reverse connections: each neighbor → new node, taking exactly
+        // one stripe lock at a time (see deadlock rule in hnsw.h). The
+        // prune happens under the same lock as the push_back: releasing
+        // in between would let a concurrent insert add an edge that our
+        // recomputed list silently drops (lost update).
         for (uint32_t neighbor_id : neighbors) {
+            std::lock_guard<std::mutex> lock(lock_for(neighbor_id));
             Node& neighbor = nodes_[neighbor_id];
             neighbor.neighbors[layer].push_back(vector_id);
 
