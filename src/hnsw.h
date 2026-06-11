@@ -110,6 +110,25 @@ private:
     uint32_t entry_point_ = 0;
     uint32_t max_layer_ = 0;
 
+    // Striped locks guarding per-node state (neighbor lists, level,
+    // inserted flag). Node i maps to stripe i % kNumLockStripes.
+    //
+    // Granularity trade-off: one global lock would serialize all inserts;
+    // a mutex per node costs 64 bytes each (64MB at 1M nodes). A fixed
+    // 4096-stripe array gives near-per-node parallelism for 256KB —
+    // with 14 threads over 4096 stripes, false sharing of a stripe by
+    // two threads working on different nodes is rare (~2%).
+    //
+    // Deadlock rule: never hold two stripe locks at once. Every critical
+    // section locks one node, mutates it, and releases before touching
+    // another. With at most one lock held per thread, no cycle can form.
+    static constexpr size_t kNumLockStripes = 4096;
+    mutable std::vector<std::mutex> node_locks_;
+
+    std::mutex& lock_for(uint32_t node_id) const {
+        return node_locks_[node_id % kNumLockStripes];
+    }
+
     std::atomic<uint32_t> num_inserted_{0};
 
     uint32_t M0_;   // max connections at layer 0 = 2 * M

@@ -16,6 +16,7 @@ HNSWIndex::HNSWIndex(const VectorDataset& dataset, HNSWConfig config)
     , nodes_(dataset.num_vectors)
     , M0_(config.M * 2)
     , mL_(1.0f / std::log(static_cast<float>(config.M)))
+    , node_locks_(kNumLockStripes)
     , rng_(config.seed)
 {}
 
