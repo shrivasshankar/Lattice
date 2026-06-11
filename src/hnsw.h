@@ -4,7 +4,9 @@
 #include "distance.h"
 #include "search.h"
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <random>
 #include <string>
 #include <unordered_set>
@@ -54,9 +56,15 @@ public:
     void load(const std::string& filename);
 
     // Getters for testing and inspection
-    uint32_t get_max_layer() const { return max_layer_; }
-    uint32_t get_entry_point() const { return entry_point_; }
-    uint32_t num_nodes() const { return num_inserted_; }
+    uint32_t get_max_layer() const {
+        std::lock_guard<std::mutex> lock(entry_mutex_);
+        return max_layer_;
+    }
+    uint32_t get_entry_point() const {
+        std::lock_guard<std::mutex> lock(entry_mutex_);
+        return entry_point_;
+    }
+    uint32_t num_nodes() const { return num_inserted_.load(); }
     const std::vector<uint32_t>& get_neighbors(uint32_t node_id, uint32_t layer) const;
     uint32_t get_node_level(uint32_t node_id) const;
 
@@ -92,9 +100,17 @@ private:
     HNSWConfig config_;
 
     std::vector<Node> nodes_;
+
+    // entry_point_ and max_layer_ form an invariant pair: search descends
+    // from max_layer_ starting at entry_point_, so they must never be
+    // observed mid-update. Both are guarded by entry_mutex_; readers take
+    // a snapshot of both under the lock and work from locals.
+    // (mutable so const getters can lock.)
+    mutable std::mutex entry_mutex_;
     uint32_t entry_point_ = 0;
     uint32_t max_layer_ = 0;
-    uint32_t num_inserted_ = 0;
+
+    std::atomic<uint32_t> num_inserted_{0};
 
     uint32_t M0_;   // max connections at layer 0 = 2 * M
     float mL_;      // level multiplier = 1 / ln(M)

@@ -55,19 +55,32 @@ void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
     node.neighbors.resize(node_level + 1);
 
     // First node is a special case — no graph to search yet
-    if (num_inserted_ == 0) {
-        entry_point_ = vector_id;
-        max_layer_ = node_level;
-        num_inserted_++;
+    if (num_inserted_.load() == 0) {
+        {
+            std::lock_guard<std::mutex> lock(entry_mutex_);
+            entry_point_ = vector_id;
+            max_layer_ = node_level;
+        }
+        num_inserted_.fetch_add(1);
         return;
     }
 
     const float* query = dataset_.get_vector(vector_id);
-    uint32_t ep = entry_point_;
+
+    // Snapshot the entry pair once, under the lock, then work from locals.
+    // Re-reading max_layer_ mid-descent could observe a concurrent update
+    // and break the pair's invariant.
+    uint32_t ep;
+    uint32_t top_layer;
+    {
+        std::lock_guard<std::mutex> lock(entry_mutex_);
+        ep = entry_point_;
+        top_layer = max_layer_;
+    }
 
     // Phase 1: descend through layers above the new node's level.
     // We're just finding a good starting point — no connections made here.
-    for (int layer = static_cast<int>(max_layer_);
+    for (int layer = static_cast<int>(top_layer);
          layer > static_cast<int>(node_level); --layer) {
         auto results = search_layer(query, {ep}, 1, layer);
         if (!results.empty()) {
@@ -77,7 +90,7 @@ void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
 
     // Phase 2: at each layer where the new node exists, find neighbors
     // and create bidirectional connections.
-    uint32_t insert_from = std::min(node_level, max_layer_);
+    uint32_t insert_from = std::min(node_level, top_layer);
 
     for (int layer = static_cast<int>(insert_from); layer >= 0; --layer) {
         auto candidates = search_layer(query, {ep}, config_.ef_construction, layer);
@@ -113,13 +126,19 @@ void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
         }
     }
 
-    // If the new node is the tallest, it becomes the global entry point
-    if (node_level > max_layer_) {
-        entry_point_ = vector_id;
-        max_layer_ = node_level;
+    // If the new node is the tallest, it becomes the global entry point.
+    // The check must happen under the lock: comparing against a snapshot
+    // would let two concurrent inserts both "win" and the shorter one
+    // could overwrite the taller one's promotion.
+    {
+        std::lock_guard<std::mutex> lock(entry_mutex_);
+        if (node_level > max_layer_) {
+            entry_point_ = vector_id;
+            max_layer_ = node_level;
+        }
     }
 
-    num_inserted_++;
+    num_inserted_.fetch_add(1);
 }
 
 // ── Search ─────────────────────────────────────────────────────────────────
@@ -140,13 +159,20 @@ std::vector<SearchResult> HNSWIndex::search(
     uint32_t k,
     uint32_t ef_search
 ) {
-    if (num_inserted_ == 0) return {};
+    if (num_inserted_.load() == 0) return {};
     if (ef_search < k) ef_search = k;
 
-    uint32_t ep = entry_point_;
+    // Snapshot the entry pair (see insert for why)
+    uint32_t ep;
+    uint32_t top_layer;
+    {
+        std::lock_guard<std::mutex> lock(entry_mutex_);
+        ep = entry_point_;
+        top_layer = max_layer_;
+    }
 
     // Phase 1: greedily descend from top layer to layer 1
-    for (int layer = static_cast<int>(max_layer_); layer >= 1; --layer) {
+    for (int layer = static_cast<int>(top_layer); layer >= 1; --layer) {
         auto results = search_layer(query, {ep}, 1, layer);
         if (!results.empty()) {
             ep = results[0].index;
@@ -334,7 +360,7 @@ void HNSWIndex::save(const std::string& filename) const {
     write_u32(config_.M);
     write_u32(entry_point_);
     write_u32(max_layer_);
-    write_u32(num_inserted_);
+    write_u32(num_inserted_.load());
 
     // Node table
     for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
@@ -392,7 +418,7 @@ void HNSWIndex::load(const std::string& filename) {
 
     entry_point_  = read_u32();
     max_layer_    = read_u32();
-    num_inserted_ = read_u32();
+    num_inserted_.store(read_u32());
 
     // Node table
     nodes_.resize(num_vectors);
