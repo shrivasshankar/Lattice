@@ -257,23 +257,36 @@ std::vector<SearchResult> HNSWIndex::search_layer(
             break;
         }
 
-        // Expand: visit all neighbors of this candidate
-        const auto& nbrs = nodes_[best.index].neighbors;
-        if (layer < nbrs.size()) {
-            for (uint32_t neighbor_id : nbrs[layer]) {
-                if (visited.count(neighbor_id)) continue;
-                visited.insert(neighbor_id);
+        // Expand: visit all neighbors of this candidate.
+        //
+        // Snapshot the neighbor list under the node's stripe lock before
+        // iterating. A concurrent insert may grow or prune this exact
+        // vector; iterating the live vector across a reallocation is a
+        // use-after-free. The copy may be momentarily stale (a just-added
+        // edge missing), which only affects which candidates we expand —
+        // never the validity of the graph or the results.
+        std::vector<uint32_t> nbrs_snapshot;
+        {
+            std::lock_guard<std::mutex> lock(lock_for(best.index));
+            const auto& nbrs = nodes_[best.index].neighbors;
+            if (layer < nbrs.size()) {
+                nbrs_snapshot = nbrs[layer];
+            }
+        }
 
-                float d = config_.distance_fn(
-                    dataset_.get_vector(neighbor_id), query, dataset_.dimension
-                );
+        for (uint32_t neighbor_id : nbrs_snapshot) {
+            if (visited.count(neighbor_id)) continue;
+            visited.insert(neighbor_id);
 
-                if (results.size() < ef || d < results.top().distance) {
-                    candidates.push({neighbor_id, d});
-                    results.push({neighbor_id, d});
-                    if (results.size() > ef) {
-                        results.pop();
-                    }
+            float d = config_.distance_fn(
+                dataset_.get_vector(neighbor_id), query, dataset_.dimension
+            );
+
+            if (results.size() < ef || d < results.top().distance) {
+                candidates.push({neighbor_id, d});
+                results.push({neighbor_id, d});
+                if (results.size() > ef) {
+                    results.pop();
                 }
             }
         }
