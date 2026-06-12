@@ -1,8 +1,10 @@
 #include "hnsw.h"
+#include "thread_pool.h"
 
 #include <algorithm>
 #include <cmath>
 #include <fstream>
+#include <future>
 #include <queue>
 #include <stdexcept>
 
@@ -209,17 +211,55 @@ std::vector<SearchResult> HNSWIndex::search(
 }
 
 void HNSWIndex::build() {
+    const uint32_t n = dataset_.num_vectors;
+
     // Draw every node's level before inserting anything. Level assignment
     // is the only randomness in construction, so pulling it out of the
     // insert loop keeps levels deterministic (seed-reproducible) even once
     // inserts run concurrently and complete in nondeterministic order.
-    std::vector<uint32_t> levels(dataset_.num_vectors);
-    for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
+    std::vector<uint32_t> levels(n);
+    for (uint32_t i = 0; i < n; ++i) {
         levels[i] = random_level();
     }
 
-    for (uint32_t i = 0; i < dataset_.num_vectors; ++i) {
-        insert(i, levels[i]);
+    // Serial path: the reference implementation. Bit-identical graphs,
+    // used as the baseline for recall-parity tests and benchmarks.
+    if (config_.num_threads == 1 || n < 2) {
+        for (uint32_t i = 0; i < n; ++i) {
+            insert(i, levels[i]);
+        }
+        return;
+    }
+
+    // Parallel path. Insert the first node serially so the entry point
+    // exists before workers start; otherwise all workers race through the
+    // first-insert path against an empty graph.
+    insert(0, levels[0]);
+
+    // Work distribution: one long-running task per worker, all claiming
+    // node IDs from a shared atomic cursor. Compared to submitting one
+    // task per insert this has no per-insert queue/future overhead, and
+    // compared to static range partitioning it self-balances — workers
+    // that draw expensive inserts simply claim fewer IDs.
+    ThreadPool pool(config_.num_threads);
+    std::atomic<uint32_t> next{1};
+
+    std::vector<std::future<void>> workers;
+    workers.reserve(pool.num_threads());
+    for (uint32_t t = 0; t < pool.num_threads(); ++t) {
+        workers.push_back(pool.submit([this, &levels, &next, n] {
+            while (true) {
+                uint32_t i = next.fetch_add(1);
+                if (i >= n) return;
+                insert(i, levels[i]);
+            }
+        }));
+    }
+
+    // Barrier: build() returns only when every insert has completed.
+    // get() also rethrows any exception that escaped a worker.
+    for (auto& f : workers) {
+        f.get();
     }
 }
 

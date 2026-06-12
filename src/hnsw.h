@@ -19,6 +19,8 @@ struct HNSWConfig {
     uint32_t ef_construction = 400; // candidate list size during insert
     uint32_t seed = 42;
     DistanceFn distance_fn = l2_distance;
+    uint32_t num_threads = 1;       // build parallelism: 1 = serial (the
+                                    // reference path), 0 = all hardware cores
 };
 
 class HNSWIndex {
