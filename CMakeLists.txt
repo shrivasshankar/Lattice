@@ -54,6 +54,7 @@ add_executable(lattice_tests
     tests/test_simd_distance.cpp
     tests/test_thread_pool.cpp
     tests/test_hnsw_serial.cpp
+    tests/test_hnsw_parallel.cpp
 )
 target_link_libraries(lattice_tests PRIVATE lattice_lib GTest::gtest_main)
 
