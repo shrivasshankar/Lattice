@@ -109,6 +109,11 @@ private:
     mutable std::mutex entry_mutex_;
     uint32_t entry_point_ = 0;
     uint32_t max_layer_ = 0;
+    // True once any node has become the entry point. Guarded by
+    // entry_mutex_; the first-insert decision is check-and-act under
+    // the lock so two concurrent first inserts cannot both win
+    // (the loser would return unwired — a permanently orphaned node).
+    bool has_entry_ = false;
 
     // Striped locks guarding per-node state (neighbor lists, level,
     // inserted flag). Node i maps to stripe i % kNumLockStripes.

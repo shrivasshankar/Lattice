@@ -55,15 +55,20 @@ void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
     node.inserted = true;
     node.neighbors.resize(node_level + 1);
 
-    // First node is a special case — no graph to search yet
-    if (num_inserted_.load() == 0) {
-        {
-            std::lock_guard<std::mutex> lock(entry_mutex_);
+    // First node is a special case — no graph to search yet. The check
+    // and the claim happen in one critical section (check-and-act, not
+    // check-then-act): with a plain "count == 0" test, two concurrent
+    // first inserts could both see an empty index, and the loser would
+    // return without wiring any edges — an unreachable orphan.
+    {
+        std::lock_guard<std::mutex> lock(entry_mutex_);
+        if (!has_entry_) {
             entry_point_ = vector_id;
             max_layer_ = node_level;
+            has_entry_ = true;
+            num_inserted_.fetch_add(1);
+            return;
         }
-        num_inserted_.fetch_add(1);
-        return;
     }
 
     const float* query = dataset_.get_vector(vector_id);
@@ -446,6 +451,7 @@ void HNSWIndex::load(const std::string& filename) {
     entry_point_  = read_u32();
     max_layer_    = read_u32();
     num_inserted_.store(read_u32());
+    has_entry_ = (num_inserted_.load() > 0);
 
     // Node table
     nodes_.resize(num_vectors);
