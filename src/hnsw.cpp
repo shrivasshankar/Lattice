@@ -281,7 +281,28 @@ std::vector<SearchResult> HNSWIndex::search_layer(
     uint32_t ef,
     uint32_t layer
 ) {
-    std::unordered_set<uint32_t> visited;
+    // Visited tracking via a per-thread epoch-stamped array instead of a
+    // hash set. "Visited this search" means stamps[i] == epoch; starting a
+    // fresh search is just ++epoch — an O(1) clear with no per-call
+    // allocation and no hashing, replacing millions of unordered_set
+    // build/teardown cycles across a full index build.
+    //
+    // thread_local because the parallel build runs search_layer on many
+    // threads at once; each thread owning its own buffer is the
+    // synchronization (no shared state, no lock).
+    static thread_local std::vector<uint32_t> visited_stamps;
+    static thread_local uint32_t visited_epoch = 0;
+    const uint32_t num_vec = dataset_.num_vectors;
+    if (visited_stamps.size() < num_vec) {
+        visited_stamps.assign(num_vec, 0);
+        visited_epoch = 0;
+    }
+    // Bump the epoch to invalidate all prior marks. On wraparound (after
+    // ~4B searches) stale stamps could alias the new epoch, so clear once.
+    if (++visited_epoch == 0) {
+        std::fill(visited_stamps.begin(), visited_stamps.end(), 0);
+        visited_epoch = 1;
+    }
 
     // Min-heap: closest unvisited candidate on top
     auto cmp_min = [](const SearchResult& a, const SearchResult& b) {
@@ -299,8 +320,8 @@ std::vector<SearchResult> HNSWIndex::search_layer(
 
     // Seed with entry points
     for (uint32_t ep : entry_ids) {
-        if (visited.count(ep)) continue;
-        visited.insert(ep);
+        if (visited_stamps[ep] == visited_epoch) continue;
+        visited_stamps[ep] = visited_epoch;
         float d = config_.distance_fn(dataset_.get_vector(ep), query, dataset_.dimension);
         candidates.push({ep, d});
         results.push({ep, d});
@@ -333,8 +354,8 @@ std::vector<SearchResult> HNSWIndex::search_layer(
         }
 
         for (uint32_t neighbor_id : nbrs_snapshot) {
-            if (visited.count(neighbor_id)) continue;
-            visited.insert(neighbor_id);
+            if (visited_stamps[neighbor_id] == visited_epoch) continue;
+            visited_stamps[neighbor_id] = visited_epoch;
 
             float d = config_.distance_fn(
                 dataset_.get_vector(neighbor_id), query, dataset_.dimension
