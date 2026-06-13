@@ -45,6 +45,10 @@ target_link_libraries(tune_recall PRIVATE lattice_lib)
 add_executable(export_dataset tools/export_dataset.cpp)
 target_link_libraries(export_dataset PRIVATE lattice_lib)
 
+# ── Scaling benchmark ────────────────────────────────────────────────────────
+add_executable(scaling_benchmark tools/scaling_benchmark.cpp)
+target_link_libraries(scaling_benchmark PRIVATE lattice_lib)
+
 # ── Tests (GoogleTest via FetchContent) ─────────────────────────────────────
 include(FetchContent)
 FetchContent_Declare(
