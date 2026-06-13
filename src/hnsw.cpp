@@ -388,10 +388,18 @@ std::vector<SearchResult> HNSWIndex::search_layer(
 
 // ── Neighbor selection ─────────────────────────────────────────────────────
 //
-// Simple strategy: pick the closest max_neighbors from the candidate set.
-// The HNSW paper also describes a "heuristic" selection that prefers
-// diverse neighbors (close to the node but far from each other). We'll
-// keep it simple for now — this is sufficient for good recall.
+// Two policies, chosen by HNSWConfig::use_diversity_heuristic:
+//
+//   closest-M (default): keep the max_neighbors candidates nearest the base
+//   node. Fastest — essentially just a sort. Plateaus at high ef because
+//   connections can cluster in one direction, leaving regions hard to reach.
+//
+//   diversity (HNSW paper, Algorithm 4): process candidates closest-first and
+//   keep one only if it is closer to the base than to every already-selected
+//   neighbor. This prunes candidates "behind" an existing neighbor (same
+//   direction), so the chosen M point in diverse directions and the graph
+//   stays navigable from all sides — lifting recall at high ef. Costs up to
+//   ~|candidates| x max_neighbors extra distance evaluations per call.
 
 std::vector<uint32_t> HNSWIndex::select_neighbors(
     const std::vector<SearchResult>& candidates,
@@ -404,10 +412,47 @@ std::vector<uint32_t> HNSWIndex::select_neighbors(
               });
 
     std::vector<uint32_t> selected;
-    uint32_t count = std::min(max_neighbors, static_cast<uint32_t>(sorted.size()));
-    selected.reserve(count);
-    for (uint32_t i = 0; i < count; ++i) {
-        selected.push_back(sorted[i].index);
+    selected.reserve(max_neighbors);
+
+    if (!config_.use_diversity_heuristic) {
+        // Closest-M: take the nearest max_neighbors directly.
+        uint32_t count = std::min(max_neighbors, static_cast<uint32_t>(sorted.size()));
+        for (uint32_t i = 0; i < count; ++i) {
+            selected.push_back(sorted[i].index);
+        }
+        return selected;
+    }
+
+    // Diversity heuristic. candidate.distance is the distance to the base node
+    // (from search_layer); candidate-to-neighbor distances are computed here.
+    for (const SearchResult& cand : sorted) {
+        if (selected.size() >= max_neighbors) break;
+
+        const float* cand_vec = dataset_.get_vector(cand.index);
+        bool diverse = true;
+        for (uint32_t r : selected) {
+            float dist_to_r = config_.distance_fn(
+                cand_vec, dataset_.get_vector(r), dataset_.dimension
+            );
+            // Closer to an already-selected neighbor than to the base node:
+            // this direction is already covered, so skip.
+            if (dist_to_r < cand.distance) {
+                diverse = false;
+                break;
+            }
+        }
+        if (diverse) selected.push_back(cand.index);
+    }
+
+    // Backfill: if pruning left us short, add the closest unselected
+    // candidates so connectivity never drops below what closest-M would give.
+    if (selected.size() < max_neighbors) {
+        for (const SearchResult& cand : sorted) {
+            if (selected.size() >= max_neighbors) break;
+            if (std::find(selected.begin(), selected.end(), cand.index) == selected.end()) {
+                selected.push_back(cand.index);
+            }
+        }
     }
 
     return selected;

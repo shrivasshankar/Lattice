@@ -21,6 +21,13 @@ struct HNSWConfig {
     DistanceFn distance_fn = l2_distance;
     uint32_t num_threads = 1;       // build parallelism: 1 = serial (the
                                     // reference path), 0 = all hardware cores
+
+    // Neighbor selection during build:
+    //   false = closest-M (fastest build; the default)
+    //   true  = diversity heuristic (HNSW paper Algorithm 4): higher recall
+    //           at high ef, but ~2-2.5x slower build from the extra pairwise
+    //           distance evaluations. A recall-vs-build-time trade.
+    bool use_diversity_heuristic = false;
 };
 
 class HNSWIndex {

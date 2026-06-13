@@ -88,6 +88,23 @@ TEST(HNSWParallel, RepeatedBuildsStayCorrect) {
     }
 }
 
+TEST(HNSWSelection, DiversityHeuristicBuildsValidHighRecallIndex) {
+    auto ds = lattice::generate_random_vectors(4000, 64, 42);
+    auto queries = lattice::generate_random_vectors(30, 64, 1234);
+
+    lattice::HNSWIndex index(ds, {.M = 16, .ef_construction = 200, .seed = 42,
+                                  .num_threads = 4, .use_diversity_heuristic = true});
+    index.build();
+
+    ASSERT_EQ(index.num_nodes(), ds.num_vectors);
+    for (uint32_t i = 0; i < ds.num_vectors; ++i) {
+        EXPECT_FALSE(index.get_neighbors(i, 0).empty())
+            << "node " << i << " orphaned under diversity heuristic";
+    }
+    // Diversity selection should yield strong high-ef recall.
+    EXPECT_GE(mean_recall(index, ds, queries, 10, 200), 0.85f);
+}
+
 TEST(HNSWParallel, ZeroMeansAllCores) {
     auto ds = lattice::generate_random_vectors(1500, 32, 42);
     lattice::HNSWIndex index(ds, {.M = 16, .ef_construction = 100, .seed = 42,
