@@ -121,8 +121,8 @@ private:
     // inserted flag). Node i maps to stripe i % kNumLockStripes.
     //
     // Granularity trade-off: one global lock would serialize all inserts;
-    // a mutex per node costs 64 bytes each (64MB at 1M nodes). A fixed
-    // 4096-stripe array gives near-per-node parallelism for 256KB —
+    // a mutex per node costs 64 bytes each (~61 MiB at 1M nodes). A fixed
+    // 4096-stripe array gives near-per-node parallelism for 256 KiB —
     // with 14 threads over 4096 stripes, false sharing of a stripe by
     // two threads working on different nodes is rare (~2%).
     //
