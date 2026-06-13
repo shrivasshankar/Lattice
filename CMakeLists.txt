@@ -5,6 +5,18 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+# ── ThreadSanitizer (opt-in) ────────────────────────────────────────────────
+# -DLATTICE_TSAN=ON builds everything with ThreadSanitizer: the compiler
+# instruments every memory access and the runtime reports any data race from
+# a single execution (a lucky, output-correct run still trips it). Separate
+# build because instrumentation is ~5-15x slower; never used in production.
+# Applied to both compile and link so the sanitizer runtime is linked in.
+option(LATTICE_TSAN "Build with ThreadSanitizer" OFF)
+if(LATTICE_TSAN)
+    add_compile_options(-fsanitize=thread -g -O1 -fno-omit-frame-pointer)
+    add_link_options(-fsanitize=thread)
+endif()
+
 # ── Lattice library (shared between main and tests) ─────────────────────────
 add_library(lattice_lib
     src/vector.cpp

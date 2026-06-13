@@ -25,6 +25,23 @@ jobs:
       - name: Test
         run: cd build && ctest --output-on-failure
 
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure with ThreadSanitizer
+        run: cmake -B build-tsan -DLATTICE_TSAN=ON -DCMAKE_BUILD_TYPE=Debug
+
+      - name: Build
+        run: cmake --build build-tsan --target lattice_tests -j$(nproc)
+
+      # A data race is reported from a single execution even when the run
+      # produces correct output, so this fails the build on any unsynchronized
+      # access in the parallel path.
+      - name: Run concurrency tests under TSan
+        run: cd build-tsan && TSAN_OPTIONS="halt_on_error=1" ./lattice_tests --gtest_filter='HNSWParallel.*:ThreadPool*'
+
   docker:
     runs-on: ubuntu-latest
     needs: build-and-test
