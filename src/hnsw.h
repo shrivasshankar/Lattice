@@ -3,9 +3,11 @@
 #include "vector.h"
 #include "distance.h"
 #include "search.h"
+#include "allocator.h"
 
 #include <atomic>
 #include <cstdint>
+#include <memory>
 #include <mutex>
 #include <random>
 #include <string>
@@ -74,12 +76,25 @@ public:
         return entry_point_;
     }
     uint32_t num_nodes() const { return num_inserted_.load(); }
-    const std::vector<uint32_t>& get_neighbors(uint32_t node_id, uint32_t layer) const;
+    // Returns a copy of a node's neighbor IDs at the given layer. (Copy, not
+    // a reference: the underlying storage is a fixed-capacity arena span.)
+    std::vector<uint32_t> get_neighbors(uint32_t node_id, uint32_t layer) const;
     uint32_t get_node_level(uint32_t node_id) const;
 
 private:
+    // A node's neighbor list at one layer. `data` is backed by the graph
+    // arena and fixed-capacity — it never reallocates, so a concurrent search
+    // can read it (under the stripe lock) while an insert mutates `count`,
+    // with no use-after-free from a vector growing under the reader. `count`
+    // is the live length; slots [count, capacity) are unused.
+    struct NeighborList {
+        uint32_t* data = nullptr;
+        uint32_t count = 0;
+        uint32_t capacity = 0;
+    };
+
     struct Node {
-        std::vector<std::vector<uint32_t>> neighbors;  // neighbors[layer] = neighbor IDs
+        std::vector<NeighborList> neighbors;  // one entry per layer 0..level
         uint32_t level = 0;   // highest layer this node appears in
         bool inserted = false;
     };
@@ -149,6 +164,29 @@ private:
     float mL_;      // level multiplier = 1 / ln(M)
 
     std::mt19937 rng_;
+
+    // Graph arena: neighbor slot arrays live here instead of per-list heap
+    // allocations, so a node's neighbor IDs are contiguous (cache-friendly
+    // traversal) and the whole graph frees at once. Chunked so it serves both
+    // build() (first chunk sized exactly from the pre-drawn levels — one
+    // chunk, no waste) and incremental insert/load (grow by adding chunks).
+    // Allocation is single-threaded ONLY: build()'s serial pre-allocation
+    // pass, or serial insert/load. Parallel workers never allocate — they only
+    // mutate counts/slots under stripe locks — so the arena is never touched
+    // concurrently.
+    std::vector<std::unique_ptr<MemoryArena>> arena_chunks_;
+
+    uint32_t layer_capacity(uint32_t layer) const {
+        return layer == 0 ? M0_ : config_.M;
+    }
+    // Slots a node of the given level needs across all its layers.
+    size_t block_slots_for_level(uint32_t level) const {
+        return static_cast<size_t>(M0_) + static_cast<size_t>(level) * config_.M;
+    }
+    // Allocate n_slots uint32_t from the arena. Single-threaded use only.
+    uint32_t* arena_alloc(size_t n_slots);
+    // Allocate a node's per-layer neighbor lists (no-op if already allocated).
+    void allocate_node(Node& node, uint32_t level);
 };
 
 } // namespace lattice

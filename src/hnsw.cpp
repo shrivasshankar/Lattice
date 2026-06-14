@@ -22,6 +22,38 @@ HNSWIndex::HNSWIndex(const VectorDataset& dataset, HNSWConfig config)
     , rng_(config.seed)
 {}
 
+// ── Graph arena ──────────────────────────────────────────────────────────────
+//
+// Single-threaded use only (build's serial pre-pass, or serial insert/load).
+// Tries the current chunk; if it can't fit, adds a new chunk sized to hold at
+// least the request (and a 1M-slot floor so incremental growth isn't chunk-spam).
+
+uint32_t* HNSWIndex::arena_alloc(size_t n_slots) {
+    const size_t bytes = n_slots * sizeof(uint32_t);
+    if (!arena_chunks_.empty()) {
+        void* p = arena_chunks_.back()->allocate(bytes, alignof(uint32_t));
+        if (p) return static_cast<uint32_t*>(p);
+    }
+    size_t chunk_slots = std::max<size_t>(n_slots, size_t{1} << 20);
+    arena_chunks_.push_back(std::make_unique<MemoryArena>(chunk_slots * sizeof(uint32_t)));
+    void* p = arena_chunks_.back()->allocate(bytes, alignof(uint32_t));
+    return static_cast<uint32_t*>(p);
+}
+
+// Allocate a node's per-layer neighbor lists from the arena (no-op if already
+// allocated). Sets the node's level and fixed per-layer capacities.
+void HNSWIndex::allocate_node(Node& node, uint32_t level) {
+    if (!node.neighbors.empty()) return;  // already allocated
+    node.level = level;
+    node.neighbors.resize(level + 1);
+    for (uint32_t layer = 0; layer <= level; ++layer) {
+        uint32_t cap = layer_capacity(layer);
+        node.neighbors[layer].data = arena_alloc(cap);
+        node.neighbors[layer].count = 0;
+        node.neighbors[layer].capacity = cap;
+    }
+}
+
 // ── Layer selection ────────────────────────────────────────────────────────
 //
 // Returns a random level drawn from a geometric-like distribution.
@@ -53,9 +85,12 @@ void HNSWIndex::insert(uint32_t vector_id) {
 
 void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
     Node& node = nodes_[vector_id];
-    node.level = node_level;
+    // Allocate this node's arena-backed neighbor lists if not already done.
+    // In the parallel build every node is pre-allocated serially before any
+    // worker starts, so this is a no-op there (no concurrent arena access);
+    // in the serial/single-insert path it allocates lazily.
+    allocate_node(node, node_level);
     node.inserted = true;
-    node.neighbors.resize(node_level + 1);
 
     // First node is a special case — no graph to search yet. The check
     // and the claim happen in one critical section (check-and-act, not
@@ -114,30 +149,38 @@ void HNSWIndex::insert(uint32_t vector_id, uint32_t node_level) {
         // outgoing list for this layer fully populated.
         {
             std::lock_guard<std::mutex> lock(lock_for(vector_id));
-            node.neighbors[layer] = neighbors;
+            NeighborList& nl = node.neighbors[layer];
+            nl.count = std::min<uint32_t>(neighbors.size(), nl.capacity);
+            for (uint32_t i = 0; i < nl.count; ++i) nl.data[i] = neighbors[i];
         }
 
         // Reverse connections: each neighbor → new node, taking exactly
-        // one stripe lock at a time (see deadlock rule in hnsw.h). The
-        // prune happens under the same lock as the push_back: releasing
-        // in between would let a concurrent insert add an edge that our
-        // recomputed list silently drops (lost update).
+        // one stripe lock at a time (see deadlock rule in hnsw.h). Append if
+        // there's room; if the list is already at capacity, choose the best
+        // `capacity` among the existing neighbors plus the new edge — all
+        // under the same lock, so a concurrent insert's edge can't be lost in
+        // a release/reacquire gap. (Equivalent to the old push-then-prune.)
         for (uint32_t neighbor_id : neighbors) {
             std::lock_guard<std::mutex> lock(lock_for(neighbor_id));
-            Node& neighbor = nodes_[neighbor_id];
-            neighbor.neighbors[layer].push_back(vector_id);
+            NeighborList& nl = nodes_[neighbor_id].neighbors[layer];
 
-            // If a neighbor now has too many connections, prune it
-            if (neighbor.neighbors[layer].size() > max_conn) {
+            if (nl.count < nl.capacity) {
+                nl.data[nl.count++] = vector_id;
+            } else {
                 const float* n_vec = dataset_.get_vector(neighbor_id);
                 std::vector<SearchResult> n_candidates;
-                for (uint32_t n_neighbor : neighbor.neighbors[layer]) {
-                    float d = config_.distance_fn(
-                        n_vec, dataset_.get_vector(n_neighbor), dataset_.dimension
-                    );
-                    n_candidates.push_back({n_neighbor, d});
+                n_candidates.reserve(nl.count + 1);
+                for (uint32_t i = 0; i < nl.count; ++i) {
+                    uint32_t nb = nl.data[i];
+                    n_candidates.push_back({nb, config_.distance_fn(
+                        n_vec, dataset_.get_vector(nb), dataset_.dimension)});
                 }
-                neighbor.neighbors[layer] = select_neighbors(n_candidates, max_conn);
+                n_candidates.push_back({vector_id, config_.distance_fn(
+                    n_vec, dataset_.get_vector(vector_id), dataset_.dimension)});
+
+                auto sel = select_neighbors(n_candidates, nl.capacity);
+                nl.count = std::min<uint32_t>(sel.size(), nl.capacity);
+                for (uint32_t i = 0; i < nl.count; ++i) nl.data[i] = sel[i];
             }
         }
 
@@ -224,6 +267,8 @@ void HNSWIndex::build() {
 
     // Serial path: the reference implementation. Bit-identical graphs,
     // used as the baseline for recall-parity tests and benchmarks.
+    // (Nodes allocate their arena blocks lazily inside insert — serial here,
+    // so the arena is touched single-threaded.)
     if (config_.num_threads == 1 || n < 2) {
         for (uint32_t i = 0; i < n; ++i) {
             insert(i, levels[i]);
@@ -231,9 +276,18 @@ void HNSWIndex::build() {
         return;
     }
 
-    // Parallel path. Insert the first node serially so the entry point
-    // exists before workers start; otherwise all workers race through the
-    // first-insert path against an empty graph.
+    // Parallel path. Pre-allocate every node's arena-backed neighbor lists
+    // SERIALLY now, before any worker starts: the total size is known from the
+    // pre-drawn levels, so the first arena chunk is sized exactly (one chunk,
+    // no waste). This is what keeps the arena single-threaded — workers only
+    // mutate counts/slots under stripe locks, never allocate.
+    size_t total_slots = 0;
+    for (uint32_t i = 0; i < n; ++i) total_slots += block_slots_for_level(levels[i]);
+    arena_chunks_.push_back(std::make_unique<MemoryArena>(total_slots * sizeof(uint32_t)));
+    for (uint32_t i = 0; i < n; ++i) allocate_node(nodes_[i], levels[i]);
+
+    // Insert the first node serially so the entry point exists before workers
+    // start; otherwise all workers race through the first-insert path.
     insert(0, levels[0]);
 
     // Work distribution: one long-running task per worker, all claiming
@@ -339,17 +393,18 @@ std::vector<SearchResult> HNSWIndex::search_layer(
         // Expand: visit all neighbors of this candidate.
         //
         // Snapshot the neighbor list under the node's stripe lock before
-        // iterating. A concurrent insert may grow or prune this exact
-        // vector; iterating the live vector across a reallocation is a
-        // use-after-free. The copy may be momentarily stale (a just-added
-        // edge missing), which only affects which candidates we expand —
-        // never the validity of the graph or the results.
+        // iterating. The arena slot array never reallocates (fixed capacity),
+        // so this is purely a consistency snapshot — copy the live `count`
+        // slots so a concurrent insert can't change count mid-iteration. The
+        // copy may be momentarily stale (a just-added edge missing), which
+        // only affects which candidates we expand — never correctness.
         std::vector<uint32_t> nbrs_snapshot;
         {
             std::lock_guard<std::mutex> lock(lock_for(best.index));
             const auto& nbrs = nodes_[best.index].neighbors;
             if (layer < nbrs.size()) {
-                nbrs_snapshot = nbrs[layer];
+                const NeighborList& nl = nbrs[layer];
+                nbrs_snapshot.assign(nl.data, nl.data + nl.count);
             }
         }
 
@@ -509,11 +564,11 @@ void HNSWIndex::save(const std::string& filename) const {
         if (!node.inserted) continue;
 
         for (uint32_t layer = 0; layer <= node.level; ++layer) {
-            const auto& nbrs = node.neighbors[layer];
-            write_u32(static_cast<uint32_t>(nbrs.size()));
-            if (!nbrs.empty()) {
-                file.write(reinterpret_cast<const char*>(nbrs.data()),
-                           nbrs.size() * sizeof(uint32_t));
+            const NeighborList& nbrs = node.neighbors[layer];
+            write_u32(nbrs.count);
+            if (nbrs.count > 0) {
+                file.write(reinterpret_cast<const char*>(nbrs.data),
+                           nbrs.count * sizeof(uint32_t));
             }
         }
     }
@@ -571,14 +626,19 @@ void HNSWIndex::load(const std::string& filename) {
             continue;
         }
 
-        node.neighbors.resize(node.level + 1);
+        // Allocate this node's arena-backed lists (serial — load is single
+        // threaded), then read each layer's count and ids into the slots.
+        allocate_node(node, node.level);
         for (uint32_t layer = 0; layer <= node.level; ++layer) {
             uint32_t num_nbrs = read_u32();
-            node.neighbors[layer].resize(num_nbrs);
+            std::vector<uint32_t> tmp(num_nbrs);
             if (num_nbrs > 0) {
-                file.read(reinterpret_cast<char*>(node.neighbors[layer].data()),
+                file.read(reinterpret_cast<char*>(tmp.data()),
                           num_nbrs * sizeof(uint32_t));
             }
+            NeighborList& nl = node.neighbors[layer];
+            nl.count = std::min<uint32_t>(num_nbrs, nl.capacity);
+            for (uint32_t j = 0; j < nl.count; ++j) nl.data[j] = tmp[j];
         }
     }
 
@@ -587,8 +647,9 @@ void HNSWIndex::load(const std::string& filename) {
 
 // ── Getters ────────────────────────────────────────────────────────────────
 
-const std::vector<uint32_t>& HNSWIndex::get_neighbors(uint32_t node_id, uint32_t layer) const {
-    return nodes_[node_id].neighbors[layer];
+std::vector<uint32_t> HNSWIndex::get_neighbors(uint32_t node_id, uint32_t layer) const {
+    const NeighborList& nl = nodes_[node_id].neighbors[layer];
+    return std::vector<uint32_t>(nl.data, nl.data + nl.count);
 }
 
 uint32_t HNSWIndex::get_node_level(uint32_t node_id) const {

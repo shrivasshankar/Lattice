@@ -163,17 +163,20 @@ python3 tools/faiss_comparison.py 50000 100000   # head-to-head (needs faiss-cpu
 ├──────────────────────┬──────────────────────────────┤
 │   SIMD Distance      │     Memory Arena             │
 │   ARM NEON / x86 SSE │     Bump allocator           │
-│   4 floats/instr     │   ~5.1x vs malloc            │
-│   4x unrolled ILP    │   (standalone microbench)    │
+│   4 floats/instr     │   backs graph neighbor       │
+│   4x unrolled ILP    │   lists (fixed-capacity)     │
 ├──────────────────────┴──────────────────────────────┤
 │                  Vector Storage                      │
 │  Contiguous row-major float arrays + binary I/O      │
 └─────────────────────────────────────────────────────┘
 ```
 
-> Note: the Memory Arena is a standalone, tested component. The HNSW index does
-> not currently allocate its graph through the arena — it uses `std::vector`.
-> Wiring the arena into the graph is a planned optimization, not yet implemented.
+> Note: the HNSW graph's neighbor lists are allocated from the arena as
+> fixed-capacity blocks (sized once from the pre-drawn levels, contiguous per
+> node). The arena's all-allocate-then-free-at-destruction lifetime matches
+> HNSW exactly, and the fixed-capacity blocks never reallocate — which also
+> removed the use-after-free hazard that the concurrent reader had to guard
+> against when neighbor lists were growable `std::vector`s.
 
 ## Concurrency
 
@@ -220,7 +223,7 @@ the insert/search paths:
 - **SIMD with 4 accumulators** — maximizes instruction-level parallelism by avoiding pipeline stalls from data dependencies.
 - **Striped per-node locks** — fine-grained concurrency for the parallel build without the memory cost of a mutex per node; one lock held at a time keeps it deadlock-free.
 - **Epoch-stamped visited list** — replaces a per-call `unordered_set` in the beam search; "visited" means `stamp[i] == epoch`, so clearing is an O(1) epoch bump with no allocation. Per-thread, so it needs no synchronization.
-- **Arena/pool allocators (standalone)** — `src/allocator.h` implements a bump-pointer arena and a fixed-size pool allocator, benchmarked at 5.1x vs `malloc` for many small allocations. They are *not yet wired into the HNSW graph* (which currently stores nodes/neighbor lists in `std::vector`); HNSW's all-allocate-then-free-at-destruction lifetime is an ideal future fit for the arena.
+- **Arena-backed graph** — `src/allocator.h`'s bump-pointer arena (5.1x vs `malloc` in a standalone microbenchmark) backs the HNSW graph: each node's per-layer neighbor lists are fixed-capacity slot arrays carved from the arena, sized once from the pre-drawn levels and laid out contiguously per node. Because the blocks never reallocate, the concurrent search reads them under the stripe lock as a pure consistency snapshot (no use-after-free), and the whole graph frees at once.
 - **`DistanceFn` as function pointer** — swap between scalar/SIMD/cosine at construction time with zero runtime overhead.
 - **`ef_search` parameter** — single knob to trade recall for latency at query time.
 - **Binary serialization** — save/load index graph in a compact binary format with magic number validation and version checking. Load is 626x faster than rebuild.
