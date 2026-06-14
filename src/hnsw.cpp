@@ -398,13 +398,22 @@ std::vector<SearchResult> HNSWIndex::search_layer(
         // slots so a concurrent insert can't change count mid-iteration. The
         // copy may be momentarily stale (a just-added edge missing), which
         // only affects which candidates we expand — never correctness.
-        std::vector<uint32_t> nbrs_snapshot;
+        //
+        // The buffer is static thread_local and reused across expansions:
+        // assign() overwrites contents but keeps capacity, so after warmup
+        // there is no per-expansion heap allocation (this runs millions of
+        // times per build). thread_local because the parallel build calls
+        // search_layer on many threads — per-thread ownership is the
+        // synchronization, so the buffer itself needs no lock.
+        static thread_local std::vector<uint32_t> nbrs_snapshot;
         {
             std::lock_guard<std::mutex> lock(lock_for(best.index));
             const auto& nbrs = nodes_[best.index].neighbors;
             if (layer < nbrs.size()) {
                 const NeighborList& nl = nbrs[layer];
                 nbrs_snapshot.assign(nl.data, nl.data + nl.count);
+            } else {
+                nbrs_snapshot.clear();  // reused buffer — clear stale contents
             }
         }
 

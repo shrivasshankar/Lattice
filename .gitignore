@@ -1,6 +1,10 @@
 build/
 build-*/
 cmake-build-*/
+data/
+*.fvecs
+*.ivecs
+*.tar.gz
 .cache/
 compile_commands.json
 *.o
