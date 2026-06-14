@@ -48,15 +48,42 @@ toward 14 as memory bandwidth saturates.
 > "50K, ef=200" differ because the query distributions differ — within each
 > comparison both engines face byte-identical queries.
 
-### Comparison with FAISS
+### SIFT1M — real-world benchmark (weight this one)
 
-Both engines run on **byte-identical vectors and queries** — Lattice's
-dataset is dumped to disk by the `export_dataset` tool and loaded by
-`tools/faiss_comparison.py`, so within this comparison neither engine has a
-data advantage. Same parameters throughout (M=32, efC=400, k=10, 200
-queries), both built multi-threaded on 14 cores.
+SIFT1M (1,000,000 128-dim image descriptors — the standard ANN benchmark)
+with its provided ground truth. Both engines on identical data, 14 threads,
+M=32, efC=400, recall@10:
 
-**50K vectors** — build: **Lattice 3.4s, FAISS 5.5s** (Lattice ~1.6x faster)
+| ef_search | Lattice recall | FAISS recall | Lattice latency | FAISS latency |
+|---|---|---|---|---|
+| 50   | 95.6% | **97.7%** | 0.236 ms | 0.016 ms |
+| 100  | 97.9% | **99.5%** | 0.365 ms | 0.029 ms |
+| 200  | 98.9% | **99.9%** | 0.660 ms | 0.053 ms |
+| 500  | 99.3% | **99.9%** | 1.349 ms | 0.124 ms |
+| 1000 | 99.4% | **99.9%** | 2.320 ms | 0.254 ms |
+
+Build: **Lattice 111.6s, FAISS 80.7s** (FAISS ~1.4x faster).
+
+On real data FAISS leads on all three axes — build (~1.4x), recall (~1–2
+points), and latency (~12x) — from its mature, SIMD-heavy, years-tuned
+implementation. Lattice's recall is genuinely competitive (95.6–99.4%, within
+~1–2 points of FAISS across all ef), which is the result that matters for a
+from-scratch HNSW. **Note this is the opposite of the synthetic build result
+below:** on uniform-random vectors Lattice builds ~1.6x *faster*, but on real
+SIFT1M FAISS builds ~1.4x faster. The build-speed comparison is
+dataset-dependent — real data is the honest one to weight, and there Lattice
+does not beat FAISS; it lands within ~1.4x.
+
+### Synthetic-data comparison with FAISS (uniform-random)
+
+These 50K/100K results use uniform-random vectors, an easier and less
+representative distribution than SIFT1M. The build-speed win shown here is
+specific to this synthetic data and **does not hold on real data** (see SIFT1M
+above); it's kept for the scaling and recall detail. Both engines run on
+byte-identical vectors and queries (dumped by `export_dataset`, loaded by
+`tools/faiss_comparison.py`), M=32, efC=400, k=10, 200 queries, 14 cores.
+
+**50K vectors** — build: **Lattice 3.4s, FAISS 5.5s** (Lattice ~1.6x faster, synthetic only)
 
 | ef_search | Lattice recall@10 | FAISS recall@10 | Lattice latency | FAISS latency |
 |---|---|---|---|---|
@@ -66,7 +93,7 @@ queries), both built multi-threaded on 14 cores.
 | 500  | 98.0%     | **100.0%** | 0.788 ms | 0.080 ms |
 | 1000 | 100.0%    | 100.0% | 1.914 ms | 0.169 ms |
 
-**100K vectors** — build: **Lattice 10.0s, FAISS 16.1s** (Lattice ~1.6x faster)
+**100K vectors** — build: **Lattice 10.0s, FAISS 16.1s** (Lattice ~1.6x faster, synthetic only)
 
 | ef_search | Lattice recall@10 | FAISS recall@10 | Lattice latency | FAISS latency |
 |---|---|---|---|---|
@@ -79,10 +106,13 @@ queries), both built multi-threaded on 14 cores.
 Honest reading of the numbers (this machine, this dataset — 128-dim
 uniform-random vectors, faiss-cpu at default HNSW settings; not a general claim):
 
-- **Build: Lattice is ~1.6x faster than FAISS** at both scales (5.45s→3.38s at
-  50K, 16.06s→10.03s at 100K), on byte-identical data, both multi-threaded.
-  The original single-threaded build was ~12–14x *slower* than FAISS; parallel
-  construction plus an epoch-stamped visited list closed and inverted the gap.
+- **Build (dataset-dependent — do not over-read):** on these synthetic
+  50K/100K sets Lattice builds ~1.6x faster (5.45s→3.38s at 50K), but on real
+  SIFT1M FAISS builds ~1.4x faster (80.7s vs 111.6s). The synthetic build-win
+  does **not** generalize. What's robust is that parallel construction plus the
+  epoch visited-list took the original ~12–14x-slower serial build to within
+  ~1.4x of FAISS on real data (and ahead on synthetic) — a real gain, just not
+  "faster than FAISS" in general.
 - **Recall, low ef:** Lattice reaches higher recall than FAISS at matched ef
   (50K ef=50: 89.4% vs 77.0%; ef=200: 95.5% vs 95.0%) — except they are
   effectively tied at 100K ef=200 (92.6% vs 92.7%). Caveat: ef is not iso-cost
@@ -120,10 +150,10 @@ ef. recall@10 (50K and 100K, identical data):
 | 100K recall @ ef=200 | 92.6% | **94.3%** |
 | 100K recall @ ef=1000 | 97.8% | **100.0%** |
 
-The trade is clean: closest-M builds ~1.6x faster than FAISS but plateaus at
-high ef; diversity matches FAISS recall at high ef but builds ~1.5x slower than
-FAISS and slightly lowers low-ef recall. `tools/plot_pareto.py` renders the
-recall-vs-latency curve.
+The trade is clean: closest-M is the faster build (on synthetic data ahead of
+FAISS, on real SIFT1M within ~1.4x) but plateaus at high ef; diversity matches
+FAISS recall at high ef but builds ~2.3x slower than closest-M and slightly
+lowers low-ef recall. `tools/plot_pareto.py` renders the recall-vs-latency curve.
 
 Reproduce:
 
