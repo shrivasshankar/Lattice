@@ -1,6 +1,10 @@
 # Lattice
 
-A high-performance approximate nearest neighbor (ANN) vector search engine built from scratch in C++17. No external libraries for core algorithms — every component is hand-written: HNSW graph construction, SIMD-accelerated distance computation, custom memory allocator, and multi-threaded index construction and query processing.
+[![CI](https://github.com/shrivasshankar/Lattice/actions/workflows/ci.yml/badge.svg)](https://github.com/shrivasshankar/Lattice/actions/workflows/ci.yml)
+
+A from-scratch approximate nearest-neighbor (ANN) vector search engine in C++17 — **no external libraries for the core algorithms**. The HNSW graph, SIMD distance kernels (NEON + SSE), bump-pointer arena allocator, and thread pool are all hand-written.
+
+The headline is the **concurrent build**: inserts run in parallel across cores with striped per-node locking, held one-lock-at-a-time so it is deadlock-free by construction, and verified race-free under ThreadSanitizer in CI. On the standard **SIFT1M** benchmark Lattice reaches 95.6–99.4% recall@10, with an honest head-to-head against FAISS below — FAISS still wins on latency and build time, and this README says so and explains why.
 
 ## About this project
 
@@ -271,7 +275,7 @@ cmake --build build -j$(nproc)
 cd build && ctest --output-on-failure
 ```
 
-103 tests covering correctness, edge cases, serialization, parallel-build
+104 tests covering correctness, edge cases, serialization, parallel-build
 correctness, and performance benchmarks.
 
 ThreadSanitizer build (race detection):
@@ -301,3 +305,7 @@ GitHub Actions runs on every push and PR:
 - Build + test on Ubuntu (x86/SSE) and macOS (ARM/NEON)
 - ThreadSanitizer build + concurrency tests
 - Docker image build + benchmark run
+
+## License
+
+MIT — see [LICENSE](LICENSE).
