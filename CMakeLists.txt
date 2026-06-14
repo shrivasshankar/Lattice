@@ -49,6 +49,10 @@ target_link_libraries(export_dataset PRIVATE lattice_lib)
 add_executable(scaling_benchmark tools/scaling_benchmark.cpp)
 target_link_libraries(scaling_benchmark PRIVATE lattice_lib)
 
+# ── SIFT/GIST benchmark (fvecs/ivecs loader) ─────────────────────────────────
+add_executable(sift_benchmark tools/sift_benchmark.cpp)
+target_link_libraries(sift_benchmark PRIVATE lattice_lib)
+
 # ── Tests (GoogleTest via FetchContent) ─────────────────────────────────────
 include(FetchContent)
 FetchContent_Declare(
