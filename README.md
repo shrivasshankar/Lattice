@@ -89,16 +89,41 @@ uniform-random vectors, faiss-cpu at default HNSW settings; not a general claim)
   across engines. Lattice's higher recall comes with ~10x higher per-query
   latency, so at matched *latency* FAISS would run a larger ef and the
   comparison favors FAISS.
-- **Recall, high ef:** At 100K, Lattice plateaus around 97–98% while FAISS
-  reaches ~100%; at 50K, FAISS leads at ef=500 (100.0% vs 98.0%) but the two
-  tie at 100.0% by ef=1000. FAISS uses the HNSW *diversity* neighbor-selection
-  heuristic; Lattice uses simple closest-M selection, which caps peak recall
-  (see Key Design Decisions).
+- **Recall, high ef (with the default closest-M selection):** at 100K Lattice
+  plateaus around 97–98% while FAISS reaches ~100%; at 50K, FAISS leads at
+  ef=500 (100.0% vs 98.0%) but the two tie at 100.0% by ef=1000. This plateau
+  is the cost of closest-M neighbor selection. Enabling the **diversity
+  heuristic** (`use_diversity_heuristic`, HNSW paper Algorithm 4) closes it —
+  50K ef=500 reaches 100.0% and 100K ef=1000 reaches 100.0%, matching FAISS —
+  for ~2.3x build cost. See the neighbor-selection table below.
 - **Query latency:** FAISS is clearly faster per query — ~8.6–11x at 50K and
   ~6–14x at 100K (the gap grows with ef and dataset size at 100K; roughly flat
   across ef at 50K until ef=1000). This narrowed from ~28x before the
   visited-list optimization but remains FAISS's domain, driven by AVX2 SIMD
   (8 floats/instruction vs NEON's 4) and a more optimized query path.
+
+### Neighbor selection: recall vs build time
+
+Neighbor selection during build is a policy knob
+(`HNSWConfig::use_diversity_heuristic`). Closest-M (default) keeps the nearest
+M candidates — fastest build. The diversity heuristic keeps a candidate only
+if it is closer to the node than to every already-chosen neighbor, so
+connections spread in diverse directions and the graph stays navigable at high
+ef. recall@10 (50K and 100K, identical data):
+
+| metric | closest-M (default) | diversity |
+|---|---|---|
+| 50K build (14T) | **3.4s** | 8.4s |
+| 50K recall @ ef=50 | **89.4%** | 84.5% |
+| 50K recall @ ef=500 | 98.0% | **100.0%** |
+| 100K build (14T) | **10.0s** | 21.7s |
+| 100K recall @ ef=200 | 92.6% | **94.3%** |
+| 100K recall @ ef=1000 | 97.8% | **100.0%** |
+
+The trade is clean: closest-M builds ~1.6x faster than FAISS but plateaus at
+high ef; diversity matches FAISS recall at high ef but builds ~1.5x slower than
+FAISS and slightly lowers low-ef recall. `tools/plot_pareto.py` renders the
+recall-vs-latency curve.
 
 Reproduce:
 
