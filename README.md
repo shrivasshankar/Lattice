@@ -39,6 +39,8 @@ striped per-node locking. Speedup vs the single-threaded reference:
 | 8  |  4.22s | 8.88x |
 | 14 |  3.29s | **11.39x** |
 
+![Parallel HNSW build scaling — near-linear speedup to 11.4× on 14 cores (50K vectors)](build_scaling.png)
+
 Recall is unchanged across thread counts — the parallel build produces a
 different graph each run (insert order is nondeterministic) but recall
 stays at parity with the serial build, asserted in CI and verified
